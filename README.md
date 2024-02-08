@@ -28,6 +28,8 @@ To run the analysis, ensure that Python 3.6 or later is installed on your system
 - Matplotlib (for data visualization)
 - NumPy (for numerical computations)
 - (Additional dependencies may be listed in a `requirements.txt` file.)
+## How to cite
+You can cite all versions by using the DOI 10.5281/zenodo.10635816. This DOI represents all versions, and will always resolve to the latest one.
 
 ## Citation
 If you use this code or the Köppen-Geiger climate classification data in your research, please cite the following paper:
