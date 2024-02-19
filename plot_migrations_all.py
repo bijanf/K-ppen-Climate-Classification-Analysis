@@ -4,7 +4,7 @@ from osgeo import gdal
 import os
 from tqdm import tqdm
 import csv
-
+from matplotlib.patches import Patch
 
 
 # Assuming `aggregated_changes_per_slice` is your dictionary with the data
@@ -62,14 +62,20 @@ koppen_colors = {
 }
 
 
-#bbox = [45, 34, 90, 56]  # Define your bounding box
+##bbox = [45, 34, 46, 36]  # Define your bounding box
 bbox = [4.5, 43.5, 16, 50]  #Alps
+##bbox  = [65, 25,105,56] #Asia 
 # Function to convert lat/long to pixel coordinates
 def world_to_pixel(geo_matrix, x, y):
     ulX, ulY, xDist, yDist = geo_matrix[0], geo_matrix[3], geo_matrix[1], geo_matrix[5]
     pixel = int((x - ulX) / xDist)
     line = int((ulY - y) / -yDist)
     return (pixel, line)
+# Function to check if the label should be inside or outside and draw a line
+def autopct_generator(limit):
+    def inner_autopct(pct):
+        return ('%.1f%%' % pct) if pct > limit else ''
+    return inner_autopct
 
 # Function to process a single model file
 def process_model(model_path, historical_array, minx, miny, maxx, maxy):
@@ -93,7 +99,20 @@ def process_model(model_path, historical_array, minx, miny, maxx, maxy):
                 pbar.update(1)
     return changes_dict_model
 
+# Function to calculate label positions with a line pointing to small slices
+def label_position(wedge, text, ax):
+    ang = (wedge.theta2 - wedge.theta1) / 2. + wedge.theta1
+    x = np.cos(np.deg2rad(ang))
+    y = np.sin(np.deg2rad(ang))
 
+    horizontalalignment = {-1: "right", 1: "left"}[int(np.sign(x))]
+    connectionstyle = "angle,angleA=0,angleB={}".format(ang)
+    ax.annotate(
+        text.get_text(), xy=(x, y), xytext=(1.5*x, 1.5*y),
+        arrowprops=dict(arrowstyle="->", connectionstyle=connectionstyle),
+        ha=horizontalalignment
+    )
+    text.set_visible(False)
 
 # Load the historical climate classification TIFF
 historical_dataset_path = os.path.join(base_dir, '1981-2010', 'bio', 'CHELSA_kg2_1981-2010_V.2.1.tif')
@@ -109,6 +128,8 @@ historical_ET_count = np.sum(historical_array == 30)
 # Placeholder for the ensemble mean changes per class for each time slice and scenario
 ensemble_mean_changes = {scenario: {time_slice: {} for time_slice in time_slices} for scenario in scenarios}
 
+# Create a set to collect unique categories that are present in the pie charts
+unique_categories = set()
 
 # Process the models and calculate the ensemble mean changes
 for scenario in scenarios:
@@ -130,9 +151,32 @@ for scenario in scenarios:
             for change, count in changes.items():
                 if change[0] == 30:  # Ensure we're only looking at changes from ET class
                     aggregated_changes[change] = aggregated_changes.get(change, 0) + count
-
+        mean_changes = ensemble_mean_changes[scenario][time_slice]
+        for change, count in mean_changes.items():
+            print("count", str(count), change)
+            if count > 0:
+                unique_categories.add(change[1])  # Add the category index to the set
+                
         # Calculate the mean changes for this scenario and time slice
         ensemble_mean_changes[scenario][time_slice] = {change: count / len(models) for change, count in aggregated_changes.items()}
+
+
+# Now create legend patches for only the unique categories that were used
+def create_legend_patches(unique_categories, koppen_colors, koppen_mapping_short):
+    patches = []
+    # Create a reverse mapping from the koppen_mapping_short
+    reverse_koppen_mapping = {v: k for k, v in koppen_mapping_short.items()}
+    for category in unique_categories:
+        label = koppen_mapping_short[reverse_koppen_mapping[category]]
+        color = koppen_colors[reverse_koppen_mapping[category]]
+        patches.append(Patch(color=color, label=label))
+    return patches
+
+
+
+# legend_patches = create_legend_patches(unique_categories, koppen_colors, koppen_mapping_short)
+
+
 
 # Configuration for plot size and font
 plt.rcParams['font.size'] = 30  # Adjust font size as needed
@@ -147,8 +191,16 @@ fig, axs = plt.subplots(num_scenarios, num_cols, figsize=(num_cols * 6, num_scen
 # Function to format the labels with percentages and count
 def format_labels(sizes, labels):
     total = sum(sizes)
-    labels_with_pct = [f'{label}\n({size/total:.1%})' for size, label in zip(sizes, labels)]
+    labels_with_pct = [f'{label}' for size, label in zip(sizes, labels)]
     return labels_with_pct
+
+# Function to check if a label should go inside or outside the pie
+def label_function(sizes, threshold=0.05):
+    def func(pct):
+        return '' if pct < threshold else f'{pct:.1f}%'
+    return func
+
+
 
 # Function to filter out sizes and labels where the percentage is less than 0.01%
 def filter_small_percentages(sizes, labels, threshold=0.15):
@@ -170,38 +222,86 @@ for i, scenario in enumerate(scenarios):
         labels = [koppen_mapping_short.get(change[1], 'Other') for change in mean_changes]
         sizes = [mean_changes[change] for change in mean_changes]
         colors = [koppen_colors.get(change[1], 'grey') for change in mean_changes]
+        
 
         # Filter sizes and labels to exclude values below 0.01%
         filtered_sizes, filtered_labels = filter_small_percentages(sizes, labels)
+        # Define the autopct function with a threshold
+        autopct = label_function(filtered_sizes)
 
         colors = [koppen_colors.get(change[1], 'grey') for change, count in zip(mean_changes, filtered_sizes) if count > 0]
 
         # Calculate the number of ET grids that remain unchanged
         total_changed_ET = sum(filtered_sizes)
         unchanged_ET = historical_ET_count - total_changed_ET
-        if (unchanged_ET / historical_ET_count) * 100 > 0.01:
-            filtered_labels.append('ET')
-            filtered_sizes.append(unchanged_ET)
-            colors.append(koppen_colors[30])  # Color for unchanged ET
+        if historical_ET_count > 0:
+            if (unchanged_ET / historical_ET_count) * 100 > 0.01:
+                filtered_labels.append('ET')
+                filtered_sizes.append(unchanged_ET)
+                colors.append(koppen_colors[30])  # Color for unchanged ET
 
         # Format the labels with percentages and count
         formatted_labels = format_labels(filtered_sizes, filtered_labels)
 
         # Plot pie chart for the current scenario and time slice
+#        ax = axs[i, j]  # Current subplot
+#        wedges, texts = ax.pie(filtered_sizes, colors=colors, startangle=90, labels=formatted_labels, labeldistance=.55)
+
+#        # Adjust the position of the labels to be outside the wedges
+#        for text in texts:
+#            text.set_horizontalalignment('center')
+
+        # Determine which slices to explode out based on a size threshold
+        explode_threshold = 0.15  # Example threshold percentage (1.5%)
+        explode = [0.1 if (size / sum(sizes)) < explode_threshold else 0 for size in filtered_sizes]
+        # Plot pie chart for the current scenario and time slice
         ax = axs[i, j]  # Current subplot
-        wedges, texts = ax.pie(filtered_sizes, colors=colors, startangle=90, labels=formatted_labels, labeldistance=.60)
+        # This threshold represents the percentage limit under which labels will be outside
+        threshold = 5
+        # Calculate the percentages for the filtered sizes
+        filtered_sizes_percentages = [size / sum(filtered_sizes) * 100 for size in filtered_sizes]
 
-        # Adjust the position of the labels to be outside the wedges
-        for text in texts:
-            text.set_horizontalalignment('center')
+        # Create pie chart
+        wedges, _ = ax.pie(
+            filtered_sizes, 
+            colors=colors, 
+#            labels=formatted_labels, 
+            startangle=90 
+#            autopct=autopct_generator(threshold),
+#            pctdistance=0.6  # Adjust this as needed
+        )
 
+        print(formatted_labels,"formatted_lables\n")
+        unique_categories.update(formatted_labels)
         # Set the title for the current pie chart
-        ax.set_title(f'{scenario} {time_slice}', fontsize=35, fontweight='bold', bbox=dict(facecolor='none', edgecolor='none', pad=5))
-        
+        ax.set_title(f'{scenario} {time_slice}', fontsize=35, fontweight='bold')
+#        # Set the title for the current pie chart
+#        ax.set_title(f'{scenario} {time_slice}', fontsize=35, fontweight='bold', bbox=dict(facecolor='none', edgecolor='none', pad=5))
+
+
+unique_labels = set()
+print(unique_categories)
+## Loop through each list and add labels to the set
+#for label_list in unique_categories:
+#    unique_labels.update(label_list)
+##print(unique_labels)
+
+## Convert the set to a list to get your final list of unique labels
+#unique_labels = list(unique_labels)
+
+##unique_labels.sort()
+
+##print(unique_labels)
+
+legend_patches = create_legend_patches(unique_categories, koppen_colors, koppen_mapping_short)
+#print(unique_categories)
+# Add a legend for the whole figure
 plt.tight_layout()
+plt.subplots_adjust(bottom=0.05)
+fig.legend(handles=legend_patches, loc='upper center', ncol=len(legend_patches), fontsize=35, bbox_to_anchor=(0.5, -0.025))
 # Place the legend on the figure
 plt.savefig('aggregated_migrations_by_scenario_adjusted_ALPS.png',bbox_inches='tight', dpi=300)
-
+#plt.savefig('aggregated_migrations_by_scenario_adjusted_ASIA.png',bbox_inches='tight', dpi=300)
 
 
 
